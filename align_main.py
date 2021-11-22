@@ -10,30 +10,19 @@ import os
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
-from imutils import paths
-from multiprocessing import Pool
+torch.multiprocessing.set_start_method('spawn')
 
-import config
+
 from data import cfg_mnet, cfg_re50
 from models.retinaface import RetinaFace
 from layers.functions.prior_box import PriorBox
 from utils.nms.py_cpu_nms import py_cpu_nms
 from utils.box_utils import decode, decode_landm
 from align_faces import warp_and_crop_face, get_reference_facial_points
-
-print("[Listing]")
-imagePaths = list(paths.list_images(config.srcDir))
+import config
 
 cudnn.benchmark = True
 torch.set_grad_enabled(False)
-
-# model
-model = None
-if config.network == "mobile0.25":
-    model = cfg_mnet
-elif config.network == "resnet50":
-    model = cfg_re50
-
 
 def check_keys(model, pretrained_state_dict):
     ckpt_keys = set(pretrained_state_dict.keys())
@@ -83,22 +72,21 @@ def GetFacialPoints(img_raw):
 
     loc, conf, landms = net(img)  # forward pass
 
-    priorbox = PriorBox(model, image_size=(height, width))
+    priorbox = PriorBox(cfg, image_size=(height, width))
     priors = priorbox.forward()
     priors = priors.to(device)
     prior_data = priors.data
-    boxes = decode(loc.data.squeeze(0), prior_data, model['variance'])
+    boxes = decode(loc.data.squeeze(0), prior_data, cfg['variance'])
     boxes = boxes * scale / config.resize
-    boxes = boxes.cpu().numpy()
-    scores = conf.squeeze(0).data.cpu().numpy()[:, 1]
-    landms = decode_landm(landms.data.squeeze(
-        0), prior_data, model['variance'])
+    boxes = boxes.cpu().detach().numpy()
+    scores = conf.squeeze(0).data.cpu().detach().numpy()[:, 1]
+    landms = decode_landm(landms.data.squeeze(0), prior_data, cfg['variance'])
     scale1 = torch.Tensor([img.shape[3], img.shape[2], img.shape[3], img.shape[2],
                            img.shape[3], img.shape[2], img.shape[3], img.shape[2],
                            img.shape[3], img.shape[2]])
     scale1 = scale1.to(device)
     landms = landms * scale1 / config.resize
-    landms = landms.cpu().numpy()
+    landms = landms.cpu().detach().numpy()
 
     # ignore low scores
     inds = np.where(scores > config.confidence_threshold)[0]
@@ -134,66 +122,63 @@ def GetRetinaROI(image, confidence):
     bestFaceConfidence = 0.0
     bestFace = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
-    try:
-        # search every face in the image
-        faces = GetFacialPoints(image)
-
-        for i in range(len(faces)):
-            # Each bounding box
-            faceConfidence = faces[i][4]
-            # print(faceConfidence)
-
-            if len(faces[i]) != 15:
-                return None
-
-            if faceConfidence < confidence:
-                continue
-
-            if faceConfidence >= bestFaceConfidence:
-                bestFaceConfidence = faceConfidence
-                bestFace = faces[i]
-
-        # # Show image
-        # b = bestFace
-        # cv2.rectangle(image, (b[0], b[1]), (b[2], b[3]), (0, 255, 0), 2)
-        # cv2.circle(image, (b[5], b[6]), 1, (0, 0, 255), 4)
-        # cv2.circle(image, (b[7], b[8]), 1, (0, 255, 255), 4)
-        # cv2.circle(image, (b[9], b[10]), 1, (255, 0, 255), 4)
-        # cv2.circle(image, (b[11], b[12]), 1, (0, 255, 0), 4)
-        # cv2.circle(image, (b[13], b[14]), 1, (255, 0, 0), 4)
-
-        # cv2.imshow("image", image)
-
-        return bestFace
-    except:
-        return None
+    # search every face in the image
+    faces = GetFacialPoints(image)
+    # print("[Info] Found face: {}".format(faces))
 
 
-def Align(index):
-    imgPath = imagePaths[index]
-    savePath = config.dstDir + imgPath[21:]
+    for i in range(len(faces)):
+        # Each bounding box
+        faceConfidence = faces[i][4]
+        # print("[Info] FaceConfidence: {}".format(faceConfidence))
 
-    if os.path.exists(savePath):
-        print('[INFO]Existed: #' + str(index))
-        return
+        if len(faces[i]) != 15:
+            return None
 
-    image = cv2.imread(imgPath)
+        if faceConfidence < confidence:
+            continue
+
+        if faceConfidence >= bestFaceConfidence:
+            bestFaceConfidence = faceConfidence
+            bestFace = faces[i]
+
+    # # Show image
+    # b = bestFace
+    # cv2.rectangle(image, (b[0], b[1]), (b[2], b[3]), (0, 255, 0), 2)
+    # cv2.circle(image, (b[5], b[6]), 1, (0, 0, 255), 4)
+    # cv2.circle(image, (b[7], b[8]), 1, (0, 255, 255), 4)
+    # cv2.circle(image, (b[9], b[10]), 1, (255, 0, 255), 4)
+    # cv2.circle(image, (b[11], b[12]), 1, (0, 255, 0), 4)
+    # cv2.circle(image, (b[13], b[14]), 1, (255, 0, 0), 4)
+
+    # cv2.imshow("image", image)
+
+    return bestFace
+
+
+def Align(image):
+    confidence = 0.6
+
+    # print('[Info] Input image size: {}'.format(image.shape))
+    retina = GetRetinaROI(image, confidence)
+    
+    # retinaROI
+    # get the 5 landmarks of face
+    facialPoints = [retina[5], retina[7], retina[9], retina[11], retina[13],
+                    retina[6], retina[8], retina[10], retina[12], retina[14]]
+    facialPoints = np.reshape(facialPoints, (2, 5))
+    # print(facialPoints)
+
+    # try:
+        
+    # except:
+    #     # print('[Info] Alignment failed'.format(image))
+    #     return image
 
     # Parameters for alignment
-    confidence = 0.6
+
     inner_padding_factor = 0.05
     outer_padding = (0, 0)
-
-    try:
-        # retinaROI
-        retina = GetRetinaROI(image, confidence)
-        # get the 5 landmarks of face
-        facialPoints = [retina[5], retina[7], retina[9], retina[11], retina[13],
-                        retina[6], retina[8], retina[10], retina[12], retina[14]]
-        facialPoints = np.reshape(facialPoints, (2, 5))
-        # print(facialPoints)
-    except:
-        return image
 
     # get the reference 5 landmarks position in the crop settings
     referencePoint = get_reference_facial_points(
@@ -203,32 +188,43 @@ def Align(index):
     # alignment
     alignedImg = warp_and_crop_face(
         image, facialPoints, reference_pts=referencePoint, crop_size=config.output_size)
-
-    dirName = os.path.dirname(savePath)
-    if not os.path.isdir(dirName):
-        os.makedirs(dirName)
-
-    cv2.imwrite(savePath, alignedImg)
-    print('[INFO]Save the file: #' + str(index) + '\t' + savePath)
-
     return alignedImg
 
-
-# net
-net = RetinaFace(cfg=model, phase='test')
+cfg = None
+if config.network == "mobile0.25":
+    cfg = cfg_mnet
+elif config.network == "resnet50":
+    cfg = cfg_re50
+# net and model
+net = RetinaFace(cfg=cfg, phase='test')
 net = load_model(net, config.trained_model, config.cpu)
-net.eval()
 
+net.eval()
 device = torch.device("cpu" if config.cpu else "cuda:0")
 net = net.to(device)
 
-if __name__ == '__main__':
-    num_img = len(imagePaths)
-    print('[INFO]Total files: ' + str(num_img))
 
-    # for i in range(num_img):
-    #     Align(i)
+# if __name__ == '__main__':
+#     num_img = len(imagePaths)
+#     # print("Total: " + str"cpu" if cpu else "cuda:0")
+#     net = net.to(device)(num_img) + '\n')
 
-    p = Pool(processes=2)
-    p.map(Align, range(num_img))
-    p.close()
+#     for i in range(2500):
+#         path = imagePaths[i]
+#         srcImg = cv2.imread(path)
+#         dstimg = Align(srcImg)
+
+#         token = path.split('\\')
+#         token[4] = 'align'
+#         savePath = '/'.join(token)
+
+#         if not os.path.isdir(os.path.dirname(savePath)):
+#             os.makedirs(os.path.dirname(savePath), mode=755)
+
+#         cv2.imwrite(savePath, dstimg)
+#         print('[Finish] {}/{}:{}'.format(i, num_img, savePath))
+
+
+#         # cv2.imshow("dstimg", dstimg)
+#         # cv2.waitKey(0)
+#         # cv2.destroyAllWindows()
