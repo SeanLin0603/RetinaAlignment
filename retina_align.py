@@ -145,6 +145,5 @@ def Align(image):
     else:
         drawImg = None
 
-    # return alignedImg, image
     return alignedImg, drawImg
 
