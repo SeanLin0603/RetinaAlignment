@@ -1,6 +1,6 @@
 default_square = True
 output_size = (299, 299)
-draw_landmark = True
+draw_landmark = False
 
 # Parameters
 # RESNET#####################################################
